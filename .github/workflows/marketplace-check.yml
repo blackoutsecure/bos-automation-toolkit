@@ -1,0 +1,201 @@
+name: Marketplace check
+
+"on":
+  workflow_call:
+    inputs:
+      checkout_ref:
+        description: Branch, tag, or SHA to validate. Empty uses the triggering commit.
+        required: false
+        type: string
+        default: ""
+      action_yml_path:
+        description: Path to the Action manifest.
+        required: false
+        type: string
+        default: action.yml
+      fail_on_warning:
+        description: Fail when Marketplace Kit reports an operational warning.
+        required: false
+        type: boolean
+        default: false
+      skip_checks:
+        description: Comma-separated Marketplace Kit rule IDs to skip.
+        required: false
+        type: string
+        default: ""
+      check_org_health:
+        description: Look up community-health files in the caller's owner/.github repository.
+        required: false
+        type: boolean
+        default: false
+      org_health_repo:
+        description: Optional owner/.github repository for inherited community-health files.
+        required: false
+        type: string
+        default: ""
+      run_name_check:
+        description: Check Marketplace name availability; generally only useful before first publish.
+        required: false
+        type: boolean
+        default: false
+      proposed_name:
+        description: Name to check. Empty reads the manifest's top-level name.
+        required: false
+        type: string
+        default: ""
+      name_check_fail_on_collision:
+        description: Fail when Marketplace name availability reports a collision.
+        required: false
+        type: boolean
+        default: true
+      run_branding_preview:
+        description: Render and upload the Marketplace branding card.
+        required: false
+        type: boolean
+        default: true
+      branding_preview_feather_ref:
+        description: Feather Icons ref used to render the branding preview.
+        required: false
+        type: string
+        default: v4.28.0
+      branding_preview_artifact_name:
+        description: Artifact name for the rendered branding card.
+        required: false
+        type: string
+        default: marketplace-card
+      branding_preview_artifact_retention_days:
+        description: Branding artifact retention in days.
+        required: false
+        type: number
+        default: 14
+    outputs:
+      check_passed:
+        description: True when the Marketplace Kit check succeeds.
+        value: ${{ jobs.check.outputs.check_passed }}
+      name_check_collision:
+        description: True when the optional name check finds a collision.
+        value: ${{ jobs.name-check.outputs.collision }}
+      branding_preview_artifact:
+        description: Uploaded branding artifact name, when enabled.
+        value: ${{ jobs.branding-preview.outputs.artifact }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplace-check-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Marketplace policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      check_passed: ${{ steps.check.outcome == 'success' }}
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+          persist-credentials: false
+
+      - name: Check Marketplace requirements
+        id: check
+        uses: blackoutsecure/bos-marketplace-kit/.github/actions/check@c3ca87e5c5c9d72237ce8ff426a759b0f878de91 # v0.1.28
+        with:
+          use_marketplace_config: auto
+          use_global_config: "false"
+          config_path: .github/bos-universal-config.json
+          action_yml_path: ${{ inputs.action_yml_path }}
+          fail_on_warning: ${{ inputs.fail_on_warning }}
+          skip_checks: ${{ inputs.skip_checks }}
+          github_token: ${{ inputs.check_org_health && github.token || '' }}
+          check_org_health: ${{ inputs.check_org_health }}
+          org_health_repo: ${{ inputs.org_health_repo }}
+
+  name-check:
+    name: Marketplace name availability
+    if: ${{ inputs.run_name_check }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      collision: ${{ steps.name.outputs.user_or_org_collision == 'true' || steps.name.outputs.marketplace_collision == 'true' || steps.name.outputs.reserved_category == 'true' || steps.name.outputs.reserved_feature == 'true' }}
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+          persist-credentials: false
+
+      - name: Resolve proposed name
+        id: resolve
+        shell: bash
+        env:
+          PROPOSED_NAME: ${{ inputs.proposed_name }}
+          ACTION_YML_PATH: ${{ inputs.action_yml_path }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${PROPOSED_NAME}" ]]; then
+            name="${PROPOSED_NAME}"
+          else
+            if [[ ! -f "${ACTION_YML_PATH}" ]]; then
+              echo "::error::Action manifest not found: ${ACTION_YML_PATH}" >&2
+              exit 1
+            fi
+            name="$(awk '/^name:[[:space:]]*/{
+              sub(/^name:[[:space:]]*/, "")
+              sub(/^["'\'']/, "")
+              sub(/["'\''][[:space:]]*$/, "")
+              print
+              exit
+            }' "${ACTION_YML_PATH}")"
+            if [[ -z "${name}" ]]; then
+              echo "::error::No top-level name found in ${ACTION_YML_PATH}" >&2
+              exit 1
+            fi
+          fi
+          printf 'name=%s\n' "${name}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check Marketplace name
+        id: name
+        uses: blackoutsecure/bos-marketplace-kit/.github/actions/name-check@c3ca87e5c5c9d72237ce8ff426a759b0f878de91 # v0.1.28
+        with:
+          proposed_name: ${{ steps.resolve.outputs.name }}
+          fail_on_collision: ${{ inputs.name_check_fail_on_collision }}
+
+  branding-preview:
+    name: Marketplace branding preview
+    if: ${{ inputs.run_branding_preview }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact-name }}
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+          persist-credentials: false
+
+      - name: Render branding card
+        id: render
+        uses: blackoutsecure/bos-marketplace-kit/.github/actions/branding-preview@c3ca87e5c5c9d72237ce8ff426a759b0f878de91 # v0.1.28
+        with:
+          action_yml_path: ${{ inputs.action_yml_path }}
+          feather_ref: ${{ inputs.branding_preview_feather_ref }}
+
+      - name: Upload branding card
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.branding_preview_artifact_name }}
+          path: ${{ steps.render.outputs.card_path }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.branding_preview_artifact_retention_days }}

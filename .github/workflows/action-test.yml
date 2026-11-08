@@ -1,0 +1,127 @@
+name: Python Action tests
+
+"on":
+  workflow_call:
+    inputs:
+      python_versions:
+        description: JSON array of Python versions for the test matrix.
+        required: false
+        type: string
+        default: '["3.11", "3.12"]'
+      requirements_file:
+        description: Optional requirements file, relative to working_directory.
+        required: false
+        type: string
+        default: ""
+      install_packages:
+        description: JSON array of additional packages to install with pip.
+        required: false
+        type: string
+        default: '["pytest"]'
+      install_project:
+        description: Install the checked-out project in editable mode.
+        required: false
+        type: boolean
+        default: false
+      pytest_args:
+        description: JSON array of arguments passed to python -m pytest.
+        required: false
+        type: string
+        default: '["-q"]'
+      working_directory:
+        description: Repository-relative directory containing the project and tests.
+        required: false
+        type: string
+        default: "."
+
+permissions:
+  contents: read
+
+concurrency:
+  group: action-test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(inputs.python_versions) }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v6.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test dependencies
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          REQUIREMENTS_FILE: ${{ inputs.requirements_file }}
+          INSTALL_PACKAGES: ${{ inputs.install_packages }}
+          INSTALL_PROJECT: ${{ inputs.install_project }}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          requirements_file = os.environ["REQUIREMENTS_FILE"].strip()
+          packages = json.loads(os.environ["INSTALL_PACKAGES"])
+          if not isinstance(packages, list) or any(
+              not isinstance(item, str) or not item.strip() for item in packages
+          ):
+              raise SystemExit("install_packages must be a JSON array of non-empty strings")
+
+          if requirements_file:
+              if not Path(requirements_file).is_file():
+                  raise SystemExit(f"requirements_file does not exist: {requirements_file}")
+              subprocess.check_call(
+                  [sys.executable, "-m", "pip", "install", "-r", requirements_file]
+              )
+          if os.environ["INSTALL_PROJECT"].lower() == "true":
+              subprocess.check_call(
+                  [sys.executable, "-m", "pip", "install", "--editable", "."]
+              )
+          if packages:
+              subprocess.check_call(
+                  [sys.executable, "-m", "pip", "install", *packages]
+              )
+          PY
+
+      - name: Run pytest
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          PYTEST_ARGS: ${{ inputs.pytest_args }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          arguments = json.loads(os.environ["PYTEST_ARGS"])
+          if not isinstance(arguments, list) or any(
+              not isinstance(item, str) for item in arguments
+          ):
+              raise SystemExit("pytest_args must be a JSON array of strings")
+          raise SystemExit(
+              subprocess.call([sys.executable, "-m", "pytest", *arguments])
+          )
+          PY
