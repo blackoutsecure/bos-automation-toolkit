@@ -1,0 +1,177 @@
+name: Marketplace release
+
+"on":
+  workflow_call:
+    inputs:
+      source_branch:
+        description: Branch containing the Action version to release.
+        required: true
+        type: string
+      target_branch:
+        description: Marketplace-facing branch to update.
+        required: false
+        type: string
+        default: main
+      allowlist_paths:
+        description: Newline-separated paths to promote from source_branch.
+        required: true
+        type: string
+      tag_name:
+        description: Explicit SemVer tag to create (for example v1.2.3).
+        required: true
+        type: string
+      dry_run:
+        description: Validate and stage without pushing, tagging, or releasing.
+        required: false
+        type: boolean
+        default: false
+      update_major_tag:
+        description: Update the floating vN tag after successful promotion.
+        required: false
+        type: boolean
+        default: false
+      publish_release:
+        description: Publish a GitHub Release after promotion.
+        required: false
+        type: boolean
+        default: true
+      release_name:
+        description: Optional GitHub Release title. Defaults to tag_name.
+        required: false
+        type: string
+        default: ""
+      release_draft:
+        description: Publish the GitHub Release as a draft.
+        required: false
+        type: boolean
+        default: false
+      release_prerelease:
+        description: Mark the GitHub Release as a prerelease.
+        required: false
+        type: boolean
+        default: false
+      release_files:
+        description: Newline-separated file globs to attach to the release.
+        required: false
+        type: string
+        default: ""
+    outputs:
+      tag_name:
+        description: Tag name promoted by this workflow.
+        value: ${{ jobs.promote.outputs.tag_name }}
+      target_sha:
+        description: Target branch SHA after promotion.
+        value: ${{ jobs.promote.outputs.target_sha }}
+      promoted:
+        description: True when the tag was published.
+        value: ${{ jobs.promote.outputs.promoted }}
+      release_url:
+        description: GitHub Release URL when published.
+        value: ${{ jobs.release.outputs.url }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplace-release-${{ github.repository }}-${{ inputs.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve source commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Checkout source branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_branch }}
+          persist-credentials: false
+      - name: Record source commit
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'sha=%s\n' "$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+  validate:
+    name: Validate Marketplace release
+    needs: resolve
+    permissions:
+      contents: read
+    uses: ./.github/workflows/marketplace-check.yml
+    with:
+      checkout_ref: ${{ needs.resolve.outputs.sha }}
+      run_branding_preview: false
+
+  promote:
+    name: Promote allowlisted files and tag
+    needs: [resolve, validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      tag_name: ${{ steps.promote.outputs.tag_name }}
+      target_sha: ${{ steps.promote.outputs.target_sha }}
+      promoted: ${{ steps.promote.outputs.promoted }}
+    steps:
+      - name: Checkout source branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Promote allowlisted files
+        id: promote
+        uses: blackoutsecure/bos-automation-toolkit/.github/actions/promote@28254e2b55a7ef9a53067a21c400fc0990085ef9 # v0.1.28 adapted
+        with:
+          source_branch: ${{ inputs.source_branch }}
+          expected_source_sha: ${{ needs.resolve.outputs.sha }}
+          target_branch: ${{ inputs.target_branch }}
+          allowlist_paths: ${{ inputs.allowlist_paths }}
+          tag_name: ${{ inputs.tag_name }}
+          dry_run: ${{ inputs.dry_run }}
+          update_major_tag: ${{ inputs.update_major_tag }}
+
+  release:
+    name: Publish GitHub Release
+    needs: promote
+    if: >-
+      ${{
+        needs.promote.outputs.promoted == 'true' &&
+        !inputs.dry_run &&
+        inputs.publish_release
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      url: ${{ steps.release.outputs.url }}
+    steps:
+      - name: Checkout promoted files
+        if: ${{ inputs.release_files != '' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.promote.outputs.target_sha }}
+          persist-credentials: false
+
+      - name: Publish release
+        id: release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        with:
+          tag_name: ${{ needs.promote.outputs.tag_name }}
+          name: ${{ inputs.release_name || needs.promote.outputs.tag_name }}
+          target_commitish: ${{ inputs.target_branch }}
+          draft: ${{ inputs.release_draft }}
+          prerelease: ${{ inputs.release_prerelease }}
+          generate_release_notes: true
+          files: ${{ inputs.release_files }}
+          fail_on_unmatched_files: true
+          token: ${{ github.token }}
