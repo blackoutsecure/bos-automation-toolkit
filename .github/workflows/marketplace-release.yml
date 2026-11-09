@@ -77,18 +77,40 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  resolve:
+    name: Resolve source commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Checkout source branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_branch }}
+          persist-credentials: false
+      - name: Record source commit
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'sha=%s\n' "$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
   validate:
     name: Validate Marketplace release
+    needs: resolve
     permissions:
       contents: read
     uses: ./.github/workflows/marketplace-check.yml
     with:
-      checkout_ref: ${{ inputs.source_branch }}
+      checkout_ref: ${{ needs.resolve.outputs.sha }}
       run_branding_preview: false
 
   promote:
     name: Promote allowlisted files and tag
-    needs: validate
+    needs: [resolve, validate]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -101,15 +123,16 @@ jobs:
       - name: Checkout source branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.source_branch }}
+          ref: ${{ needs.resolve.outputs.sha }}
           fetch-depth: 0
           persist-credentials: true
 
       - name: Promote allowlisted files
         id: promote
-        uses: blackoutsecure/bos-marketplace-kit/.github/actions/promote@c3ca87e5c5c9d72237ce8ff426a759b0f878de91 # v0.1.28
+        uses: blackoutsecure/bos-automation-toolkit/.github/actions/promote@28254e2b55a7ef9a53067a21c400fc0990085ef9 # v0.1.28 adapted
         with:
           source_branch: ${{ inputs.source_branch }}
+          expected_source_sha: ${{ needs.resolve.outputs.sha }}
           target_branch: ${{ inputs.target_branch }}
           allowlist_paths: ${{ inputs.allowlist_paths }}
           tag_name: ${{ inputs.tag_name }}
@@ -132,6 +155,13 @@ jobs:
     outputs:
       url: ${{ steps.release.outputs.url }}
     steps:
+      - name: Checkout promoted files
+        if: ${{ inputs.release_files != '' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.promote.outputs.target_sha }}
+          persist-credentials: false
+
       - name: Publish release
         id: release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0

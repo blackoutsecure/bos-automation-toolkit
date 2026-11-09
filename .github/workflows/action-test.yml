@@ -37,10 +37,6 @@ name: Python Action tests
 permissions:
   contents: read
 
-concurrency:
-  group: action-test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
   pytest:
     name: pytest (Python ${{ matrix.python-version }})

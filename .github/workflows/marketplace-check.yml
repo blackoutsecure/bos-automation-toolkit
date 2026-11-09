@@ -14,20 +14,20 @@ name: Marketplace check
         type: string
         default: action.yml
       fail_on_warning:
-        description: Fail when Marketplace Kit reports an operational warning.
+        description: Set true or false to override the Marketplace Kit warning policy; empty inherits config.
         required: false
-        type: boolean
-        default: false
+        type: string
+        default: ""
       skip_checks:
         description: Comma-separated Marketplace Kit rule IDs to skip.
         required: false
         type: string
         default: ""
       check_org_health:
-        description: Look up community-health files in the caller's owner/.github repository.
+        description: Set true or false to override the configured community-health lookup policy.
         required: false
-        type: boolean
-        default: false
+        type: string
+        default: ""
       org_health_repo:
         description: Optional owner/.github repository for inherited community-health files.
         required: false
@@ -39,7 +39,7 @@ name: Marketplace check
         type: boolean
         default: false
       proposed_name:
-        description: Name to check. Empty reads the manifest's top-level name.
+        description: Name to check; required when run_name_check is enabled.
         required: false
         type: string
         default: ""
@@ -82,10 +82,6 @@ name: Marketplace check
 permissions:
   contents: read
 
-concurrency:
-  group: marketplace-check-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
   check:
     name: Marketplace policy
@@ -108,11 +104,10 @@ jobs:
         with:
           use_marketplace_config: auto
           use_global_config: "false"
-          config_path: .github/bos-universal-config.json
           action_yml_path: ${{ inputs.action_yml_path }}
           fail_on_warning: ${{ inputs.fail_on_warning }}
           skip_checks: ${{ inputs.skip_checks }}
-          github_token: ${{ inputs.check_org_health && github.token || '' }}
+          github_token: ${{ github.token }}
           check_org_health: ${{ inputs.check_org_health }}
           org_health_repo: ${{ inputs.org_health_repo }}
 
@@ -126,46 +121,22 @@ jobs:
     outputs:
       collision: ${{ steps.name.outputs.user_or_org_collision == 'true' || steps.name.outputs.marketplace_collision == 'true' || steps.name.outputs.reserved_category == 'true' || steps.name.outputs.reserved_feature == 'true' }}
     steps:
-      - name: Checkout caller repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.checkout_ref || github.sha }}
-          persist-credentials: false
-
-      - name: Resolve proposed name
-        id: resolve
+      - name: Validate proposed name
         shell: bash
         env:
           PROPOSED_NAME: ${{ inputs.proposed_name }}
-          ACTION_YML_PATH: ${{ inputs.action_yml_path }}
         run: |
           set -euo pipefail
-          if [[ -n "${PROPOSED_NAME}" ]]; then
-            name="${PROPOSED_NAME}"
-          else
-            if [[ ! -f "${ACTION_YML_PATH}" ]]; then
-              echo "::error::Action manifest not found: ${ACTION_YML_PATH}" >&2
-              exit 1
-            fi
-            name="$(awk '/^name:[[:space:]]*/{
-              sub(/^name:[[:space:]]*/, "")
-              sub(/^["'\'']/, "")
-              sub(/["'\''][[:space:]]*$/, "")
-              print
-              exit
-            }' "${ACTION_YML_PATH}")"
-            if [[ -z "${name}" ]]; then
-              echo "::error::No top-level name found in ${ACTION_YML_PATH}" >&2
-              exit 1
-            fi
+          if [[ -z "${PROPOSED_NAME//[[:space:]]/}" ]]; then
+            echo "::error::proposed_name is required when run_name_check is enabled" >&2
+            exit 1
           fi
-          printf 'name=%s\n' "${name}" >> "${GITHUB_OUTPUT}"
 
       - name: Check Marketplace name
         id: name
         uses: blackoutsecure/bos-marketplace-kit/.github/actions/name-check@c3ca87e5c5c9d72237ce8ff426a759b0f878de91 # v0.1.28
         with:
-          proposed_name: ${{ steps.resolve.outputs.name }}
+          proposed_name: ${{ inputs.proposed_name }}
           fail_on_collision: ${{ inputs.name_check_fail_on_collision }}
 
   branding-preview:
@@ -176,7 +147,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      artifact: ${{ steps.upload.outputs.artifact-name }}
+      artifact: ${{ steps.upload.outcome == 'success' && inputs.branding_preview_artifact_name || '' }}
     steps:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
