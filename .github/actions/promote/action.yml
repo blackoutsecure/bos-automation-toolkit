@@ -243,7 +243,7 @@ runs:
           true|false) ;;
           *) die "input 'dry_run' must be 'true' or 'false' (got: '${DRY_RUN}')" ;;
         esac
-        validate_bool UPDATE_MAJOR_TAG
+        validate_bool UPDATE_MAJOR_TAG "${UPDATE_MAJOR_TAG}"
 
         COMMIT_MSG="${COMMIT_MESSAGE:-release: ${TAG_NAME_INPUT}}"
         case "${COMMIT_MSG}" in

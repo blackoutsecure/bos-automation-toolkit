@@ -25,25 +25,14 @@ die() {
   exit 1
 }
 
-# validate_bool <var-name> — assert that the value is exactly "true" or
-# "false". Reads via indirection so callers can pass the variable name.
+# validate_bool <name> <value> — assert that the value is "true" or "false".
 validate_bool() {
   local name="$1"
-  local val="${!name-}"
+  local val="$2"
   case "${val}" in
     true|false) : ;;
     *) die "input ${name}=${val:-<empty>} must be 'true' or 'false'" ;;
   esac
-}
-
-# require_var <var-name> — assert that the named variable is non-empty.
-# (Named `require_var` instead of `validate_req` to avoid colliding
-# with action-local `validate_req` helpers that take different
-# argument shapes.)
-require_var() {
-  local name="$1"
-  local val="${!name-}"
-  [ -n "${val}" ] || die "required input ${name} is empty"
 }
 
 # ---------------------------------------------------------------------------
